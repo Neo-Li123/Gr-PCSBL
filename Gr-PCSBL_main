@@ -93,7 +93,7 @@ if PRINT
     fprintf('=============================================\n');
 end
 N_root=sqrt(N);
-if bits>1
+if bits>1        
     Large = 1e3;
 else
     Large=1e8;
@@ -157,27 +157,19 @@ for mm = 1:max_iters
                 AYA=A'*ASA_inv*A;
                 AYA=(gamma1*gamma1').*AYA;
                 Sigma_x=Gamma1-AYA;  
-                Mean_x=Gamma1*A'*ASA_inv*Mean_B_in;
             else
                 Sigma_x=inv((A'*diag(1./var_B_in)*A)+kron(diag(gamma.^-1),eye(block_size)));                
             end
             Mean_x=Sigma_x*A'*diag(1./var_B_in)*Mean_B_in;
             %             Mean_x=kron(Gamma,eye(block_size))*A'*Lambda_y*Mean_B_in;
-            Sig_diag=diag(Sigma_x);
-            for nn=1:N
-                seg=(nn-1)*block_size+1:nn*block_size;
-                %                 A_nn=A(:,seg);
-                %                 ALambda_nn=A_nn'*Lambda_y;
-                %             gamma(nn)=sqrt((Mean_x(seg)'*Mean_x(seg))/real(sum(sum(ALambda_nn.*A_nn.',2))));
-                gamma(nn)=real(sum(Sig_diag(seg)+abs(Mean_x(seg)).^2))/block_size;
-                %                 Mean_x(seg)=gamma(nn)*ALambda_nn*Mean_B_in;
-            end
+            cov_diag=diag(Sigma_x);
             Omega_block=abs(Mean_x).^2+cov_diag;
             if block_size>1
                 Omega=mean(reshape(Omega_block,block_size,N))';
             else
                 Omega=Omega_block;
             end
+            gamma=2*a./(Omega+2*b);
         end
     else
         for ii=1:max_iters_in
