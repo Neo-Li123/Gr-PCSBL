@@ -1,0 +1,343 @@
+function [x_est,Ind_sparse,x_report]=Block_Gr(y,A,K,block_size,varargin)
+% Input variables:
+% y: 1 bit quantized data
+% A: measured matrix
+% h: time-varying threshold
+% K: the number of non-zero blocks
+% PRINT: 0 or 1, if Output the convergent information
+% beta: the relation coefficient
+% mode: decide which kind of algorithm will be used, "Normal" means that
+% the non-extended target and the inter-block correlation will not consider
+% Output variabls:
+% x_est: the recovered sparse vector
+% ind_sparse: the location of sources estimated
+[M,num_col]=size(A);
+N=num_col/block_size;
+y_i = imag(y);
+y_r=real(y);
+if y_i(1)==0&&y_i(2)==0
+    Statue = 'real';
+else
+    Statue = 'complex';
+end
+mode='point';
+beta=0.2;
+PRINT=0;
+a=0.5;
+b=0;
+h=zeros(M,1);
+% var_n=sigma^2;
+var_n=1e0;
+% SNR=10;
+max_iters = 100;
+max_iters_in=1;
+for i=1:2:(length(varargin)-1)
+    switch lower(varargin{i})
+        case 'mode'
+            mode=varargin{i+1};
+            if PRINT
+                fprintf('=============================================\n');
+                if strcmpi(mode,'extend')
+                    fprintf('  The current mode is about extended target.\n');
+                elseif strcmpi(mode,'extend-2D')
+                    fprintf('  The current mode is about 2D extended target.\n');
+                else
+                    fprintf(' The current mode is defaultly about the point target scenario.\n');
+                end
+                fprintf('=============================================\n');
+            end
+        case 'beta'
+            beta=varargin{i+1};
+        case 'max_iters'
+            max_iters = varargin{i+1};
+        case 'max_iters_in'
+            max_iters_in = varargin{i+1};
+        case 'print'
+            PRINT = varargin{i+1};
+        case 'var_n'
+            var_n=varargin{i+1};
+        case 'relacoef'
+            beta=varargin{i+1};
+        case 'bits'
+            bits=varargin{i+1};    
+        case 'interval_len'
+            interval_len=varargin{i+1}; 
+        case 'thres'
+            h=varargin{i+1};       
+        otherwise
+            error(['Unrecognized parameter: ''' varargin{i} '''']);
+    end
+end
+% if SNR<10
+%     lambda=1e-2;
+%     learnlambda=0;
+% else
+%     lambda=1e2;
+%     learnlambda=1;
+% end
+if bits>1
+interval_len_r=real(interval_len);
+interval_len_i=imag(interval_len);
+y_r_up=y_r+interval_len_r/2;
+y_r_down=y_r-interval_len_r/2;
+y_i_up=y_i+interval_len_i/2;
+y_i_down=y_i-interval_len_i/2;
+end
+Stop_value=1e-5;
+if PRINT
+    fprintf('=============Block Gr============================\n');
+    fprintf(' The current relation parameter is %f.\n', beta);
+    fprintf(' The current noise variance is %d.\n', var_n);
+    disp([' The current mode is about :',mode,' target scenario.']);
+    fprintf(' The convergent criterion is %d\n :',Stop_value);
+    fprintf('=============================================\n');
+end
+N_root=sqrt(N);
+if bits>1
+    Large = 1e3;
+else
+    Large=1e8;
+end
+var_A_in= Large*ones(M,1);
+Mean_A_in = zeros(M,1);
+Mean_x=zeros(num_col,1);
+gamma=ones(N,1);
+% Lambda_y=1/Large*eye(M);
+Sigma_x=Large*eye(num_col);
+x_report=[];
+Dnmse=[];
+rr=1;
+for mm = 1:max_iters
+    %-----------------------------Module A---------------------------------
+        var_A_in(var_A_in<=0)=Large;
+    if strcmpi(Statue,'complex')
+        Mean_r = real(Mean_A_in-h);
+        Mean_i = imag(Mean_A_in-h);
+        if bits==1
+            [Mean_post_r,Var_post_r] = CalculatePost(y_r,Mean_r,real(Mean_A_in),var_A_in/2,var_n/2);
+            [Mean_post_i,Var_post_i] = CalculatePost(y_i,Mean_i,imag(Mean_A_in),var_A_in/2,var_n/2);
+        else
+            [Mean_post_r,Var_post_r]= CalculatePost_LowB(y_r_up,y_r_down,Mean_r,var_A_in/2,var_n/2);
+            [Mean_post_i,Var_post_i]= CalculatePost_LowB(y_i_up,y_i_down,Mean_i,var_A_in/2,var_n/2);
+        end
+        Mean_post = Mean_post_r+1j*Mean_post_i;
+        var_post = (Var_post_r+Var_post_i);%
+    else
+        Mean_y = Mean_A_in-h;
+        [Mean_post,Var_post] = CalculatePost(y,Mean_y,Mean_A_in,var_A_in,var_n);
+        var_post =mean(Var_post);
+    end
+    [Mean_B_in,var_B_in]  = turbocode(Mean_post,var_post,Mean_A_in,var_A_in);
+%     if isnan(Mean_B_in(1))||isinf(Mean_B_in(1))||isinf(var_B_in(1))||var_B_in(1)<0
+%         fprintf(' Error Occur\n');
+%         var_B_in=var_post;
+%         Mean_B_in=Mean_post;
+%     end
+    var_B_in(var_B_in>=Large)=Large;
+    var_B_in(var_B_in<=0)=Large;
+%     var_B_in(var_B_in<=1/Large)=1/Large;
+    %----------------------------Module B----------------------------------
+    Mean_old=Mean_x;
+    if strcmpi(mode,'point')
+        %         Product_x=zeros(N,1);
+        for ii=1:max_iters_in
+            if M<num_col
+                gamma1=kron(gamma,ones(block_size,1));
+                Gamma1=diag(gamma1);
+%                 AYA=A'/(var_B_in*eye(M)+A*Gamma1*A')*A;
+%                 D1=kron(gamma,ones(block_size,num_col));
+%                 Sigma_x=Gamma1-D1.*AYA.*D1';
+                ASA_inv=zeros(M,M);
+                for nn=1:block_size
+                    M_part=M/block_size;
+                    Ind_temp=1+(nn-1)*M_part:nn*M_part;
+                    A_temp=A(Ind_temp,nn:block_size:num_col);                  
+                    ASA_inv(Ind_temp,Ind_temp)=inv(A_temp*diag(gamma)*A_temp'+diag(var_B_in(Ind_temp)));
+                end
+                AYA=A'*ASA_inv*A;
+                AYA=(gamma1*gamma1').*AYA;
+                Sigma_x=Gamma1-AYA;  
+                Mean_x=Gamma1*A'*ASA_inv*Mean_B_in;
+            else
+                Sigma_x=inv((A'*diag(1./var_B_in)*A)+kron(diag(gamma.^-1),eye(block_size)));                
+            end
+            Mean_x=Sigma_x*A'*diag(1./var_B_in)*Mean_B_in;
+            %             Mean_x=kron(Gamma,eye(block_size))*A'*Lambda_y*Mean_B_in;
+            Sig_diag=diag(Sigma_x);
+            for nn=1:N
+                seg=(nn-1)*block_size+1:nn*block_size;
+                %                 A_nn=A(:,seg);
+                %                 ALambda_nn=A_nn'*Lambda_y;
+                %             gamma(nn)=sqrt((Mean_x(seg)'*Mean_x(seg))/real(sum(sum(ALambda_nn.*A_nn.',2))));
+                gamma(nn)=real(sum(Sig_diag(seg)+abs(Mean_x(seg)).^2))/block_size;
+                %                 Mean_x(seg)=gamma(nn)*ALambda_nn*Mean_B_in;
+            end
+            Omega_block=abs(Mean_x).^2+cov_diag;
+            if block_size>1
+                Omega=mean(reshape(Omega_block,block_size,N))';
+            else
+                Omega=Omega_block;
+            end
+        end
+    else
+        for ii=1:max_iters_in
+            if strcmpi(mode,'extend')
+                gamma_left_one = [0;gamma(1:end-1)];
+                gamma_right_one=[gamma(2:end);0];
+                gamma_rela = gamma+beta*gamma_left_one+beta*gamma_right_one;
+            elseif strcmpi(mode,'extend-2D')
+                gamma_left_one = [0;gamma(1:end-1)];
+                gamma_left_Nr = [zeros(N_root,1);gamma(1:end-N_root)];
+                gamma_right_one=[gamma(2:end);0];
+                gamma_right_Nr=[gamma(N_root+1:end);zeros(N_root,1)];
+                gamma_rela = gamma+beta*(gamma_left_one+gamma_right_one+gamma_left_Nr+gamma_right_Nr);
+            end
+            if M<num_col
+                gamma_inv=kron(gamma_rela.^-1,ones(block_size,1));
+                Gamma1=diag(gamma_inv);
+%                 AYA=A'/(diag(var_B_in)+A*Gamma1*A')*A;
+%                 D1=kron(gamma_rela.^-1,ones(block_size,num_col));
+%                 Sigma_x=Gamma1-D1.*AYA.*D1';
+                ASA_inv=zeros(M,M);
+                for nn=1:block_size
+                    M_part=M/block_size;
+                    Ind_temp=1+(nn-1)*M_part:nn*M_part;
+                    A_temp=A(Ind_temp,nn:block_size:num_col);
+                    ASA_inv(Ind_temp,Ind_temp)=inv(A_temp*diag(gamma_rela.^-1)*A_temp'+diag(var_B_in(Ind_temp)));
+                end
+                AYA=A'*ASA_inv*A;
+                AYA=(gamma_inv*gamma_inv').*AYA;
+                Sigma_x=Gamma1-AYA; 
+            else
+                Sigma_x=pinv((A'*diag(1./var_B_in)*A)+diag(kron(gamma_rela,ones(block_size,1))));               
+            end   
+            Mean_x=Sigma_x*A'*diag(1./var_B_in)*Mean_B_in;
+             cov_diag=real(diag(Sigma_x));
+            Omega_block=abs(Mean_x).^2+cov_diag;
+            if block_size>1
+                Omega=mean(reshape(Omega_block,block_size,N))';
+            else
+                Omega=Omega_block;
+            end
+            if strcmpi(mode,'extend')
+                Omega_left_one=[0;Omega(1:end-1)];
+                Omega_right_one=[Omega(2:end);0];
+                Omega_rela=Omega+beta*Omega_left_one+beta*Omega_right_one;
+            elseif strcmpi(mode,'extend-2D')
+                Omega_left_one=[0;Omega(1:end-1)];
+                Omega_left_Nr=[zeros(N_root,1);Omega(1:end-N_root)];
+                Omega_right_one=[Omega(2:end);0];
+                Omega_right_Nr=[Omega(N_root+1:end);zeros(N_root,1)];
+                Omega_rela=Omega+beta*(Omega_left_one+Omega_right_one+Omega_left_Nr+Omega_right_Nr);
+            end
+            % update hyperparameter
+            gamma=2*a./(Omega_rela+2*b);
+        end
+    end
+    var_y=real(sum((A*Sigma_x).*conj(A),2));
+    var_y(var_y==0)=1e5;% var_y 中由于A存在零行使得出现元素为0
+    x_report=[x_report Mean_x];
+    Mean_y=A*Mean_x;
+    [Mean_A_in,var_A_in] = turbocode(Mean_y,var_y,Mean_B_in,var_B_in);
+    var_A_in(var_A_in>=Large)=Large;
+    var_A_in(var_A_in<=1/Large)=1/Large;
+    %     if isnan(Mean_A_in(1))||isinf(Mean_A_in(1))||isinf(var_A_in)||var_A_in<0
+    %         fprintf('==================================================\n')
+    %         fprintf(' The value of post variance is : %d \n', var_y);
+    %         fprintf(' The value of initial variance is : %d \n', var_B_in);
+    %         Mean_x=Mean_old;
+    %         var_A_in=var_B_in;
+    %         Mean_A_in=A*Mean_x;
+    %     end
+    dme=abs(Mean_old-Mean_x);
+    dmu=max(max(dme));
+%     if dmu<Stop_value
+%         if PRINT
+%             fprintf('   Block_Gr has convergent at %d iterations\n\n.', mm);
+%         end
+%         break;
+%     end
+    if PRINT
+        disp([' Iters: ', num2str(mm),...
+            ' x change: ', num2str(dmu),...
+            ' The variance input Module B: ', num2str(mean(var_B_in))...
+            ' The variance input Module A:', num2str(mean(var_A_in))]);
+    end
+%     if mean(var_A_in)<0
+%         rr;
+%     end
+end
+if strcmpi(Statue,'real')
+    x_est=Mean_x(1:num_col/2)+1j*Mean_x(num_col/2+1:end);
+else
+    x_est=Mean_x;
+end
+Mtr_temp=reshape(x_est,block_size,N);
+norm_block=sum(abs(Mtr_temp).^2,1);
+% figure;plot(norm_block);
+[~,Ind_temp]=sort(abs(norm_block),'descend');
+Ind_sparse=sort(Ind_temp(1:K));
+end
+function [Mean_post,Sigma_post]= CalculatePost(y,Mean_y,Mean,var_in,var_n)
+
+value = y.*(Mean_y)./sqrt(var_in+var_n);
+pc = logcdf_1der(value);
+Mean_post = Mean+pc.*y.*var_in./sqrt(var_n+var_in);
+delta_sigma=pc.*var_in.^2./(var_in+var_n).*(pc+value);
+Sigma_post = var_in-delta_sigma;
+end
+function [Mean_post,Sigma_post]= CalculatePost_LowB(y_up,y_down,Mean,var_in,var_n)
+value_up = (Mean-y_up)./sqrt(var_in+var_n);
+value_down = (Mean-y_down)./sqrt(var_in+var_n);
+% value_up = (sign(y).*Mean-max(abs(y_up),abs(y_down)))./sqrt(var_in+var_n);
+% value_down = (sign(y).*Mean-min(abs(y_up),abs(y_down)))./sqrt(var_in+var_n);
+% phiPhi_up = logcdf_1der(value_up);
+% phiPhi_down = logcdf_1der(value_down);
+phi_up=normpdf(value_up);
+phi_down=normpdf(value_down);
+phi_ud=phi_down-phi_up;
+Phi_ud=0.5*erfcx(-value_down./sqrt(2))./exp(value_down.^2/2)-...
+    0.5*erfcx(-value_up./sqrt(2))./exp(value_up.^2/2);
+% Phi_ud=normcdf(value_down)-normcdf(value_up);
+% ======update mean
+Mean_post = Mean+phi_ud./Phi_ud.*var_in./sqrt(var_n+var_in);
+% Mean_post = Mean+sign(y).*phi_ud./Phi_ud.*var_in./sqrt(var_n+var_in);
+% =======update variance
+vp=value_down.*phi_down-value_up.*phi_up;
+BigphiPhi=(vp./Phi_ud+(phi_ud./Phi_ud).^2);
+delta_sigma=var_in.^2./(var_in+var_n).*BigphiPhi;
+Sigma_post = var_in-delta_sigma;
+end
+% function [Mean_post,Sigma_post]= CalculatePost_LowB(y_up,y_down,Mean,var_in,var_n)
+% % value_up = (Mean-y_up)./sqrt(var_in+var_n);
+% % value_down = (Mean-y_down)./sqrt(var_in+var_n);
+% 
+% value_up = (sign(y).*Mean-max(abs(y_up),abs(y_down)))./sqrt(var_in+var_n);
+% value_down = (sign(y).*Mean-min(abs(y_up),abs(y_down)))./sqrt(var_in+var_n);
+% % phiPhi_up = logcdf_1der(value_up);
+% % phiPhi_down = logcdf_1der(value_down);
+% phi_up=normpdf(value_up);
+% phi_down=normpdf(value_down);
+% phi_ud=phi_down-phi_up;
+% Phi_ud=log(exp(0.5*erfcx(-value_down./sqrt(2))./exp(value_down.^2/2))./...
+%     exp(0.5*erfcx(-value_up./sqrt(2))./exp(value_up.^2/2)));
+% % Phi_ud=normcdf(value_down)-normcdf(value_up);
+% % ======update mean
+% % Mean_post = Mean+phi_ud./Phi_ud.*var_in./sqrt(var_n+var_in);
+% Mean_post = Mean+sign(y).*phi_ud./Phi_ud.*var_in./sqrt(var_n+var_in);
+% % =======update variance
+% vp=value_down.*phi_down-value_up.*phi_up;
+% BigphiPhi=(vp./Phi_ud+(phi_ud./Phi_ud).^2);
+% delta_sigma=var_in.^2./(var_in+var_n).*BigphiPhi;
+% Sigma_post = var_in-delta_sigma;
+% end
+
+function [Mean_out,var_out] = turbocode(Mean_post,var_post,Mean_in,var_in)
+var_out=1./(1./var_post-1./var_in);
+Ind_temp=find(var_out>1e10);
+if ~isempty(Ind_temp)
+    fprintf(' Correct One.\n');
+    var_out(Ind_temp)=1e10;
+end
+Mean_out = var_out.*(Mean_post./var_post-Mean_in./var_in);
+end
