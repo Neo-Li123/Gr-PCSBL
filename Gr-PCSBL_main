@@ -162,7 +162,7 @@ for mm = 1:max_iters
             end
             Mean_x=Sigma_x*A'*diag(1./var_B_in)*Mean_B_in;
             %             Mean_x=kron(Gamma,eye(block_size))*A'*Lambda_y*Mean_B_in;
-            cov_diag=diag(Sigma_x);
+            cov_diag=real(diag(Sigma_x));
             Omega_block=abs(Mean_x).^2+cov_diag;
             if block_size>1
                 Omega=mean(reshape(Omega_block,block_size,N))';
