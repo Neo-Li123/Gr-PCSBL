@@ -142,7 +142,7 @@ for mm = 1:max_iters
         %         Product_x=zeros(N,1);
         for ii=1:max_iters_in
             if M<num_col
-                gamma1=kron(gamma,ones(block_size,1));
+                gamma1=kron(gamma.^-1,ones(block_size,1));
                 Gamma1=diag(gamma1);
 %                 AYA=A'/(var_B_in*eye(M)+A*Gamma1*A')*A;
 %                 D1=kron(gamma,ones(block_size,num_col));
@@ -152,7 +152,7 @@ for mm = 1:max_iters
                     M_part=M/block_size;
                     Ind_temp=1+(nn-1)*M_part:nn*M_part;
                     A_temp=A(Ind_temp,nn:block_size:num_col);                  
-                    ASA_inv(Ind_temp,Ind_temp)=inv(A_temp*diag(gamma)*A_temp'+diag(var_B_in(Ind_temp)));
+                    ASA_inv(Ind_temp,Ind_temp)=inv(A_temp*diag(gamma.^-1)*A_temp'+diag(var_B_in(Ind_temp)));
                 end
                 AYA=A'*ASA_inv*A;
                 AYA=(gamma1*gamma1').*AYA;
